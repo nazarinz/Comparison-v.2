@@ -6,8 +6,8 @@
 # Aturan:
 #   - Cari SO duplikat di Temporary Tracking dengan Remark 2 kosong
 #   - Semua baris di PGD Report yang memiliki SO tsb -> set Result_LPD = "TEMP"
-# Perbaikan: normalisasi SO (hapus non-digit, buang leading zero) agar match stabil
-# terhadap perbedaan format (angka -> "110...0", "110...0.0", notasi ilmiah, dll).
+# Perbaikan: normalisasi SO (hapus non-digit, buang leading zero) + aturan trailing zero
+# khusus Temporary (9 digit & berakhir '0' → hapus 1 digit) agar match stabil.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ st.title("🕒 Temporary LPD Check — Merge ke PGD Report (Fixed)")
 
 st.caption(
     "Upload **Temporary Tracking.xlsx** dan **PGD Comparison Tracking Report - <tanggal>.xlsx**. "
-    "SO distandarkan (hanya digit, tanpa leading zero) untuk menghindari mismatch."
+    "SO distandarkan agar menghindari mismatch (angka/text, notasi ilmiah, trailing zero)."
 )
 
 # --------------------------------- Sidebar -----------------------------------
@@ -60,12 +60,19 @@ def _is_empty_series(s: pd.Series) -> pd.Series:
     return s.isna() | s.astype(str).str.strip().eq("")
 
 
-def _normalize_so_series(s: pd.Series) -> pd.Series:
-    return (
+def _normalize_so_series(s: pd.Series, *, source: str) -> pd.Series:
+    """Normalisasi SO:
+    - Ambil digit saja, buang leading zero
+    - Khusus source=="temporary": jika panjang 9 dan berakhir '0' → hapus 1 digit trailing
+    """
+    out = (
         s.astype(str)
-        .str.replace(r"\D+", "", regex=True)  # hanya digit
-        .str.lstrip("0")                         # buang leading zero
+         .str.replace(r"\D+", "", regex=True)
+         .str.lstrip("0")
     )
+    if source == "temporary":
+        out = out.where(~((out.str.len() == 9) & out.str.endswith("0")), out.str[:-1])
+    return out
 
 # --------------------------------- Main --------------------------------------
 if temp_file and pgd_file:
@@ -93,8 +100,8 @@ if temp_file and pgd_file:
             pgd_df[pgd_result_lpd_col] = ""
 
         # Normalisasi SO kedua file
-        temp_df["__SO_norm__"] = _normalize_so_series(temp_df[temp_so_col])
-        pgd_df["__SO_norm__"] = _normalize_so_series(pgd_df[pgd_so_col])
+        temp_df["__SO_norm__"] = _normalize_so_series(temp_df[temp_so_col], source="temporary")
+        pgd_df["__SO_norm__"] = _normalize_so_series(pgd_df[pgd_so_col], source="pgd")
 
         # SO target: duplikat + remark2 kosong
         tmp_rem2_empty = _is_empty_series(temp_df[temp_remark2_col])
@@ -132,13 +139,14 @@ if temp_file and pgd_file:
         out_xlsx_name = "PGD_Comparison_Updated_Temporary_LPD.xlsx"
         out_csv_name = "PGD_Comparison_Updated_Temporary_LPD.csv"
 
-        xbio = _export_excel_styled(pgd_df.drop(columns=[c for c in pgd_df.columns if c.startswith("__")]), sheet_name="Report")
+        cleaned = pgd_df.drop(columns=[c for c in pgd_df.columns if c.startswith("__")], errors="ignore")
+        xbio = _export_excel_styled(cleaned, sheet_name="Report")
         st.download_button(
             "Download Excel (styled)", data=xbio, file_name=out_xlsx_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True
         )
         st.download_button(
-            "Download CSV", data=pgd_df.drop(columns=[c for c in pgd_df.columns if c.startswith("__")]).to_csv(index=False).encode("utf-8"),
+            "Download CSV", data=cleaned.to_csv(index=False).encode("utf-8"),
             file_name=out_csv_name, mime="text/csv", use_container_width=True
         )
 
@@ -147,3 +155,4 @@ if temp_file and pgd_file:
         st.exception(e)
 else:
     st.info("Unggah kedua file di sidebar untuk mulai (Temporary Tracking & PGD Report).")
+
